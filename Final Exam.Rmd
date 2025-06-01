@@ -1,7 +1,21 @@
 ---
 title: "Predictive Analytics - Final Exam"
+date: "13/06/2025"
 output: html_notebook
 ---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  out.width = "60%",
+  message = FALSE
+)
+
+library(tidyverse)
+library(urca)
+library(fpp3)
+```
+
 
 This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
 
