@@ -16,17 +16,70 @@ library(urca)
 library(fpp3)
 ```
 
+## Data Loading and Exploration
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+```{r loading}
+df1 <- read_csv("wikipedia_2007-2015.csv", show_col_types = FALSE) 
+df2 <- read_csv("wikipedia_2016-2025.csv", show_col_types = FALSE)
 
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+df1 <- df1 %>%
+  filter(as_date(month) != as_date("2016-01-01"))
 
-```{r}
-plot(cars)
+clicks_raw <- bind_rows(df1, df2) %>%
+  transmute(
+    date = as_date(month),
+    clicks = total.total    
+  ) %>%
+  arrange(date)
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+```{r exploration}
+glimpse(clicks_raw)
+summary(clicks_raw)
+clicks_raw %>% ggplot(aes(x = date, y = clicks)) + geom_line()
+```
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+```{r check_duplicates}
+clicks_raw %>%
+  count(date) %>%
+  filter(n > 1)
+```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+```{r check_missing}
+clicks_raw %>%
+  filter(is.na(clicks)) %>%
+  select(date, clicks)
+```
+
+```{r daily}
+clicks_daily <- clicks_raw
+```
+
+```{r weekly_aggregation}
+clicks_weekly <- clicks_raw %>%
+  mutate(week = floor_date(date, unit = "week")) %>%
+  group_by(week) %>%
+  summarise(clicks = sum(clicks, na.rm = TRUE)) %>%
+  ungroup() %>%
+  rename(date = week)
+
+```
+
+```{r monthly_aggrgation}
+clicks_monthly <- clicks_raw %>%
+  mutate(month = floor_date(date, unit = "month")) %>%
+  group_by(month) %>%
+  summarise(clicks = sum(clicks, na.rm = TRUE)) %>%
+  ungroup() %>%
+  rename(date = month)
+
+```
+
+
+```{r comparison}
+clicks_daily %>% ggplot(aes(x = date, y = clicks)) + geom_line() + ggtitle("Daily Clicks")
+clicks_weekly %>% ggplot(aes(x = date, y = clicks)) + geom_line() + ggtitle("Weekly Clicks")
+clicks_monthly %>% ggplot(aes(x = date, y = clicks)) + geom_line() + ggtitle("Monthly Clicks")
+
+```
+
