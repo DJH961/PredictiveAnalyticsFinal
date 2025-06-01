@@ -23,53 +23,56 @@ df1 <- read_csv("wikipedia_2007-2015.csv", show_col_types = FALSE)
 df2 <- read_csv("wikipedia_2016-2025.csv", show_col_types = FALSE)
 
 df1 <- df1 %>%
-  filter(as_date(month) != as_date("2016-01-01"))
+  filter(as_date(month) < as_date("2016-01-01"))
 
-clicks_raw <- bind_rows(df1, df2) %>%
+df2 <- df2 %>%
+  filter(as_date(month) < as_date("2025-06-01"))
+
+views_raw <- bind_rows(df1, df2) %>%
   transmute(
     date = as_date(month),
-    clicks = total.total    
+    views = total.total    
   ) %>%
   arrange(date)
 ```
 
 ```{r exploration}
-glimpse(clicks_raw)
-summary(clicks_raw)
-clicks_raw %>% ggplot(aes(x = date, y = clicks)) + geom_line()
+glimpse(views_raw)
+summary(views_raw)
+views_raw %>% ggplot(aes(x = date, y = views)) + geom_line()
 ```
 
 ```{r check_duplicates}
-clicks_raw %>%
+views_raw %>%
   count(date) %>%
   filter(n > 1)
 ```
 
 ```{r check_missing}
-clicks_raw %>%
-  filter(is.na(clicks)) %>%
-  select(date, clicks)
+views_raw %>%
+  filter(is.na(views)) %>%
+  select(date, views)
 ```
 
 ```{r daily}
-clicks_daily <- clicks_raw
+views_daily <- views_raw
 ```
 
 ```{r weekly_aggregation}
-clicks_weekly <- clicks_raw %>%
+views_weekly <- views_raw %>%
   mutate(week = floor_date(date, unit = "week")) %>%
   group_by(week) %>%
-  summarise(clicks = sum(clicks, na.rm = TRUE)) %>%
+  summarise(views = sum(views, na.rm = TRUE)) %>%
   ungroup() %>%
   rename(date = week)
 
 ```
 
 ```{r monthly_aggrgation}
-clicks_monthly <- clicks_raw %>%
+views_monthly <- views_raw %>%
   mutate(month = floor_date(date, unit = "month")) %>%
   group_by(month) %>%
-  summarise(clicks = sum(clicks, na.rm = TRUE)) %>%
+  summarise(views = sum(views, na.rm = TRUE)) %>%
   ungroup() %>%
   rename(date = month)
 
@@ -77,9 +80,9 @@ clicks_monthly <- clicks_raw %>%
 
 
 ```{r comparison}
-clicks_daily %>% ggplot(aes(x = date, y = clicks)) + geom_line() + ggtitle("Daily Clicks")
-clicks_weekly %>% ggplot(aes(x = date, y = clicks)) + geom_line() + ggtitle("Weekly Clicks")
-clicks_monthly %>% ggplot(aes(x = date, y = clicks)) + geom_line() + ggtitle("Monthly Clicks")
+views_daily %>% ggplot(aes(x = date, y = views)) + geom_line() + ggtitle("Daily Views")
+views_weekly %>% ggplot(aes(x = date, y = views)) + geom_line() + ggtitle("Weekly Views")
+views_monthly %>% ggplot(aes(x = date, y = views)) + geom_line() + ggtitle("Monthly Views")
 
 ```
 
