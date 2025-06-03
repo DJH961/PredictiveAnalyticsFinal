@@ -1,0 +1,209 @@
+---
+title: "Predictive Analytics - Final Exam - DAILY VERSION"
+date: "13/06/2025"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  out.width = "60%",
+  message = FALSE
+)
+
+library(tidyverse)
+library(urca)
+library(fpp3)
+library(zoo)
+```
+
+## Data Loading and Exploration
+
+```{r loading}
+df1 <- read_csv("wikipedia_2007-2015_daily.csv", show_col_types = FALSE) 
+df2 <- read_csv("wikipedia_2016-2025_daily.csv", show_col_types = FALSE)
+
+#Excluding data after 2015, as this is covered by df2
+df1 <- df1 %>%
+  filter(as_date(month) < as_date("2016-01-01"))
+
+# Excluding data after June 2025, as this is the newest data available at this time - this is for comparability if a newer dataset gets downloaded
+df2 <- df2 %>%
+  filter(as_date(month) < as_date("2025-06-01"))
+
+views_raw <- bind_rows(df1, df2) %>%
+  transmute(
+    date = as_date(month),
+    views = total.total    
+  ) %>%
+  arrange(date)
+```
+
+```{r exploration}
+glimpse(views_raw)
+summary(views_raw)
+views_raw %>% ggplot(aes(x = date, y = views)) + geom_line()
+```
+
+```{r check_duplicates}
+views_raw %>%
+  count(date) %>%
+  filter(n > 1)
+```
+
+```{r daily}
+views_daily <- views_raw %>% 
+  as_tsibble(index = date)
+
+has_gaps(views_daily) 
+count_gaps(views_daily)
+```
+
+```{r}
+views_daily <- views_daily %>% 
+  fill_gaps()
+```
+
+```{r weekly_aggregation}
+views_weekly <- views_raw %>%
+  mutate(week = yearweek(floor_date(date, unit = "week", week_start = 1))) %>%
+  group_by(week) %>%
+  summarise(views = sum(views, na.rm = TRUE)) %>%
+  ungroup() %>% 
+  as_tsibble(index = week)
+
+has_gaps(views_weekly)
+
+```
+
+```{r monthly_aggrgation}
+views_monthly <- views_raw %>%
+  mutate(month = yearmonth(floor_date(date, unit = "month"))) %>%
+  group_by(month) %>%
+  summarise(views = sum(views, na.rm = TRUE)) %>%
+  ungroup() %>% 
+  as_tsibble(index = month)
+
+has_gaps(views_monthly)
+```
+
+```{r comparison}
+views_daily %>% ggplot(aes(x = date, y = views)) + geom_line() + ggtitle("Daily Views")
+views_weekly %>% ggplot(aes(x = week, y = views)) + geom_line() + ggtitle("Weekly Views")
+views_monthly %>% ggplot(aes(x = month, y = views)) + geom_line() + ggtitle("Monthly Views")
+
+```
+
+## Time Series Analysis
+
+```{r}
+# Time series plots
+views_weekly %>% autoplot(views) + ggtitle("Weekly Wikipedia Views")
+
+
+# Seasonal plots
+views_weekly %>% gg_season(views) + ggtitle("Seasonality - Weekly")
+views_monthly %>% gg_season(views) + ggtitle("Seasonality - Monthly")
+views_daily %>% gg_season(views, period=7) + ggtitle("Seasonality - Daily per Week")
+views_daily %>% gg_season(views) + ggtitle("Seasonality - Daily per Year")
+
+
+# Subseries plots (show month-to-month or weekday patterns)
+views_weekly %>% gg_subseries(views) + ggtitle("Subseries - Weekly")
+views_monthly %>% gg_subseries(views) + ggtitle("Subseries - Monthly")
+
+# Boxplots of monthly variation (standard deviation proxy)
+views_weekly %>%
+  mutate(month = yearmonth(week)) %>%
+  index_by(month) %>%
+  summarise(sd_views = sd(views)) %>%
+  autoplot(sd_views) + ggtitle("Monthly Std Dev - Weekly")
+
+```
+
+## Stationarity Check
+
+```{r STL Decomposition}
+# Use log_views to stabilize variance
+views_weekly %>%
+  model(STL(log(views) ~ season(window = "periodic"))) %>%
+  components() %>%
+  autoplot() + ggtitle("STL Decomposition - Weekly (log transformed)")
+
+views_monthly %>%
+  model(STL(log(views) ~ season(window = "periodic"))) %>%
+  components() %>%
+  autoplot() + ggtitle("STL Decomposition - Monthly (log transformed)")
+
+views_daily_filled %>%
+  model(STL(log(views) ~ season(period="week")+season(period="year"))) %>%
+  components() %>%
+  autoplot() + ggtitle("STL Decomposition - Daily (log transformed)")
+```
+
+```{r ACF PACF}
+
+views_weekly %>% ACF(views, lag_max = 104) %>% autoplot() + ggtitle("ACF - Weekly")
+
+views_weekly %>% PACF(views) %>% autoplot() + ggtitle("PACF - Weekly")
+```
+
+```{r}
+views_ts_daily <- ts(views_daily_filled$views, frequency = 365)
+views_ts_weekly <- ts(views_weekly$views, frequency = 52)
+views_ts_monthly <- ts(views_monthly$views, frequency = 12)
+
+```
+
+```{r}
+library(strucchange)
+library(scales)
+
+run_qlr_test_plot <- function(data, value_col, index_col, freq_name, freq_num) {
+  # Step 1: Lagged data
+  data_lagged <- data %>%
+    mutate(Lag0 = !!sym(value_col),
+           Lag1 = lag(!!sym(value_col))) %>%
+    filter(!is.na(Lag1))
+  
+  # Step 2: Time series format for strucchange
+  ts_data <- ts(data_lagged[, c("Lag0", "Lag1")], frequency = freq_num)
+  
+  # Step 3: Run QLR test
+  qlr <- Fstats(Lag0 ~ Lag1, data = ts_data, from = 0.10)
+  test <- sctest(qlr, type = "supF")
+  brks <- breakpoints(qlr, alpha = 0.05)
+  break_ids <- brks$breakpoints
+  
+  # Step 4: Convert to data frame for plotting
+  data_lagged <- data_lagged %>%
+    mutate(obs = row_number())
+  break_dates <- data_lagged[[index_col]][break_ids]
+  
+  # Step 5: ggplot
+  p <- ggplot(data_lagged, aes_string(x = index_col, y = value_col)) +
+    geom_line(color = "#2c3e50", linewidth = 0.8) +
+    geom_vline(xintercept = as.numeric(break_dates), linetype = "dashed", color = "red") +
+    labs(title = paste("QLR Structural Breaks -", freq_name),
+         subtitle = paste("supF =", round(test$statistic, 2), "| p =", signif(test$p.value, 3)),
+         x = "Date", y = "Views") +
+    theme_minimal(base_size = 14) +
+    scale_y_continuous(labels = label_number(scale_cut = cut_short_scale()))
+  
+  print(p)
+  
+  # Console Output
+  cat("\n", strrep("=", 60), "\n")
+  cat(paste0(">> ", toupper(freq_name), " QLR Test Results:\n"))
+  print(test)
+  cat("Breakpoints at: ", paste(break_dates, collapse = ", "), "\n")
+  
+  invisible(list(fstats = qlr, test = test, breakpoints = break_dates, plot = p))
+}
+```
+
+```{r}
+res_monthly <- run_qlr_test_plot(views_monthly, "views", "month", "monthly", 12)
+res_weekly  <- run_qlr_test_plot(views_weekly,  "views", "week",  "weekly", 52)
+res_daily   <- run_qlr_test_plot(views_daily,   "views", "date",  "daily", 365)
+```
