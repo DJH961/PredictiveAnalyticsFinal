@@ -1,0 +1,146 @@
+---
+title: "Predictive Analytics - Final Exam"
+date: "13/06/2025"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  out.width = "60%",
+  message = FALSE
+)
+
+library(tidyverse)
+library(urca)
+library(fpp3)
+library(zoo)
+```
+
+## Data Loading and Exploration
+
+```{r loading}
+df1 <- read_csv("wikipedia_2007-2015_monthly.csv", show_col_types = FALSE) 
+df2 <- read_csv("wikipedia_2016-2025_monthly.csv", show_col_types = FALSE)
+
+#Excluding data after 2015, as this is covered by df2
+df1 <- df1 %>%
+  filter(as_date(month) < as_date("2016-01-01"))
+
+# Excluding data after May 2025, as this is the newest data available at this time - this is for comparability if a newer dataset gets downloaded
+df2 <- df2 %>%
+  filter(as_date(month) < as_date("2025-06-01"))
+
+views_raw <- bind_rows(df1, df2) %>%
+  transmute(
+    month = as_date(month),
+    views = total.total    
+  ) %>%
+  arrange(month)
+```
+
+```{r exploration}
+glimpse(views_raw)
+summary(views_raw)
+views_raw %>% ggplot(aes(x = month, y = views)) + geom_line()
+```
+
+```{r check_duplicates}
+views_raw %>%
+  count(month) %>%
+  filter(n > 1)
+```
+
+```{r tsibble}
+views_tsibble <- views_raw %>% 
+  mutate(month = yearmonth(month)) %>%
+  as_tsibble(index = month)
+
+has_gaps(views_tsibble)
+interval(views_tsibble)
+```
+
+## Time Series Analysis
+
+```{r}
+# Seasonal plot
+views_tsibble %>% gg_season(views) + ggtitle("Seasonality")
+
+# Subseries plots (show month-to-month or weekday patterns)
+views_tsibble %>% gg_subseries(views) + ggtitle("Subseries")
+
+# Yearly variation (standard deviation proxy)
+views_tsibble %>%
+  mutate(year = year(month)) %>%
+  index_by(year) %>%
+  summarise(sd_views = sd(views)) %>%
+  autoplot(sd_views) + ggtitle("Yearly Std Dev")
+
+```
+
+## STL Decomposition
+
+```{r STL Decomposition}
+views_tsibble %>%
+  model(STL(log(views) ~ season(window = "periodic"))) %>%
+  components() %>%
+  autoplot() + ggtitle("STL Decomposition (log transformed)")
+```
+
+```{r ACF PACF}
+
+views_tsibble %>% ACF(views) %>% autoplot() + ggtitle("ACF")
+
+views_tsibble %>% PACF(views) %>% autoplot() + ggtitle("PACF")
+```
+
+```{r}
+library(strucchange)
+library(scales)
+
+run_qlr_test_plot <- function(data, value_col, index_col, freq_name, freq_num) {
+  # Step 1: Lagged data
+  data_lagged <- data %>%
+    mutate(Lag0 = !!sym(value_col),
+           Lag1 = lag(!!sym(value_col))) %>%
+    filter(!is.na(Lag1))
+  
+  # Step 2: Time series format for strucchange
+  ts_data <- ts(data_lagged[, c("Lag0", "Lag1")], frequency = freq_num)
+  
+  # Step 3: Run QLR test
+  qlr <- Fstats(Lag0 ~ Lag1, data = ts_data, from = 0.10)
+  test <- sctest(qlr, type = "supF")
+  brks <- breakpoints(qlr, alpha = 0.05)
+  break_ids <- brks$breakpoints
+  
+  # Step 4: Convert to data frame for plotting
+  data_lagged <- data_lagged %>%
+    mutate(obs = row_number())
+  break_dates <- data_lagged[[index_col]][break_ids]
+  
+  # Step 5: ggplot
+  p <- ggplot(data_lagged, aes_string(x = index_col, y = value_col)) +
+    geom_line(color = "#2c3e50", linewidth = 0.8) +
+    geom_vline(xintercept = as.numeric(break_dates), linetype = "dashed", color = "red") +
+    labs(title = paste("QLR Structural Breaks -", freq_name),
+         subtitle = paste("supF =", round(test$statistic, 2), "| p =", signif(test$p.value, 3)),
+         x = "Date", y = "Views") +
+    theme_minimal(base_size = 14) +
+    scale_y_continuous(labels = label_number(scale_cut = cut_short_scale()))
+  
+  print(p)
+  
+  # Console Output
+  cat("\n", strrep("=", 60), "\n")
+  cat(paste0(">> ", toupper(freq_name), " QLR Test Results:\n"))
+  print(test)
+  cat("Breakpoints at: ", paste(break_dates, collapse = ", "), "\n")
+  
+  invisible(list(fstats = qlr, test = test, breakpoints = break_dates, plot = p))
+}
+```
+
+```{r}
+res_monthly <- run_qlr_test_plot(views_tsibble, "views", "month", "monthly", 12)
+```
