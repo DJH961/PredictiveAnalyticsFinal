@@ -15,6 +15,7 @@ library(tidyverse)
 library(urca)
 library(fpp3)
 library(zoo)
+library(strucchange)
 ```
 
 ## Data Loading and Exploration
@@ -59,6 +60,20 @@ views_tsibble <- views_raw %>%
 has_gaps(views_tsibble)
 interval(views_tsibble)
 ```
+```{r}
+
+
+# Step 2: Compute spectral entropy
+
+spectral_results <- views_tsibble %>%
+  features(.vars = views_tsibble$views, features = feat_spectral)
+
+# Step 3: View entropy value
+print(spectral_results)
+```
+
+
+
 
 ## Time Series Analysis
 
@@ -94,53 +109,72 @@ views_tsibble %>% ACF(views) %>% autoplot() + ggtitle("ACF")
 views_tsibble %>% PACF(views) %>% autoplot() + ggtitle("PACF")
 ```
 
-```{r}
-library(strucchange)
-library(scales)
-
-run_qlr_test_plot <- function(data, value_col, index_col, freq_name, freq_num) {
-  # Step 1: Lagged data
-  data_lagged <- data %>%
-    mutate(Lag0 = !!sym(value_col),
-           Lag1 = lag(!!sym(value_col))) %>%
-    filter(!is.na(Lag1))
-  
-  # Step 2: Time series format for strucchange
-  ts_data <- ts(data_lagged[, c("Lag0", "Lag1")], frequency = freq_num)
-  
-  # Step 3: Run QLR test
-  qlr <- Fstats(Lag0 ~ Lag1, data = ts_data, from = 0.10)
-  test <- sctest(qlr, type = "supF")
-  brks <- breakpoints(qlr, alpha = 0.05)
-  break_ids <- brks$breakpoints
-  
-  # Step 4: Convert to data frame for plotting
-  data_lagged <- data_lagged %>%
-    mutate(obs = row_number())
-  break_dates <- data_lagged[[index_col]][break_ids]
-  
-  # Step 5: ggplot
-  p <- ggplot(data_lagged, aes_string(x = index_col, y = value_col)) +
-    geom_line(color = "#2c3e50", linewidth = 0.8) +
-    geom_vline(xintercept = as.numeric(break_dates), linetype = "dashed", color = "red") +
-    labs(title = paste("QLR Structural Breaks -", freq_name),
-         subtitle = paste("supF =", round(test$statistic, 2), "| p =", signif(test$p.value, 3)),
-         x = "Date", y = "Views") +
-    theme_minimal(base_size = 14) +
-    scale_y_continuous(labels = label_number(scale_cut = cut_short_scale()))
-  
-  print(p)
-  
-  # Console Output
-  cat("\n", strrep("=", 60), "\n")
-  cat(paste0(">> ", toupper(freq_name), " QLR Test Results:\n"))
-  print(test)
-  cat("Breakpoints at: ", paste(break_dates, collapse = ", "), "\n")
-  
-  invisible(list(fstats = qlr, test = test, breakpoints = break_dates, plot = p))
-}
-```
+## Structural Breaks Analysis
 
 ```{r}
-res_monthly <- run_qlr_test_plot(views_tsibble, "views", "month", "monthly", 12)
+# Add lagged values and retain index
+views_tsi <- views_tsibble %>%
+  mutate(
+    Lag0 = views,
+    Lag1 = lag(views)
+  )
+
+# Check shift-level features (e.g., max change point)
+views_tsi %>%
+  features(Lag0, features = shift_level_max)
+
+# Convert to time series for strucchange
+views_ts <- as.ts(views_tsi)
+
+# Rolling F-statistics (exclude 15% from start and end)
+qlr <- Fstats(Lag0 ~ Lag1, data = views_ts, from = 0.15)
+
+# Plot F-statistics
+pdf("FStats.pdf")
+plot(qlr, main = "Rolling F-Statistics for Structural Breaks")
+dev.off()
+
+# SupF test (Andrews' test for structural change)
+test <- sctest(qlr, type = "supF")
+print(test)
+
+# Estimate breakpoints (with significance level)
+breaks <- breakpoints(qlr, alpha = 0.05)
+print(breaks)
+
+# Plot again with breakpoints
+plot(qlr, alpha = 0.1, main = "F Statistics with Breakpoints")
+lines(breaks)
 ```
+
+
+
+
+```{r}
+#locate the number of January 2016 to analyze as a possible break point
+poss_break_point <- which(views_tsibble$month == yearmonth("2016-01"))
+chow_result <- sctest(formula = Lag0 ~ Lag1, type = "Chow", point = poss_break_point, data = views_ts)
+print(chow_result)
+```
+
+
+```{r}
+views_second_half <- views_ts[(poss_break_point + 1):nrow(views_ts), ]
+views_ts_second_half <- as.ts(views_second_half)
+
+qlr2 <- Fstats(Lag0 ~ Lag1, data = views_ts_second_half, from = 0.15)
+
+# SupF test (Andrews' test for structural change)
+test <- sctest(qlr2, type = "supF")
+print(test)
+
+# Estimate breakpoints (with significance level)
+breaks <- breakpoints(qlr2, alpha = 0.05)
+print(breaks)
+
+# Plot again with breakpoints
+plot(qlr, alpha = 0.1, main = "F Statistics with Breakpoints")
+lines(breaks)
+
+```
+
