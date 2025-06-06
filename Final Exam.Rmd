@@ -16,6 +16,7 @@ library(urca)
 library(fpp3)
 library(zoo)
 library(strucchange)
+library(gridExtra)
 ```
 
 ## Data Loading and Exploration
@@ -61,15 +62,7 @@ has_gaps(views_tsibble)
 interval(views_tsibble)
 ```
 ```{r}
-
-
-# Step 2: Compute spectral entropy
-
-spectral_results <- views_tsibble %>%
-  features(.vars = views_tsibble$views, features = feat_spectral)
-
-# Step 3: View entropy value
-print(spectral_results)
+print(features(views_tsibble, .vars = views_tsibble$views, features = feat_spectral))
 ```
 
 
@@ -84,22 +77,59 @@ views_tsibble %>% gg_season(views) + ggtitle("Seasonality")
 # Subseries plots (show month-to-month or weekday patterns)
 views_tsibble %>% gg_subseries(views) + ggtitle("Subseries")
 
-# Yearly variation (standard deviation proxy)
+# Rolling SD
 views_tsibble %>%
-  mutate(year = year(month)) %>%
-  index_by(year) %>%
-  summarise(sd_views = sd(views)) %>%
-  autoplot(sd_views) + ggtitle("Yearly Std Dev")
+  mutate(rolling_sd = rollapply(views, width = 12, FUN = sd, fill = NA)) %>%
+  ggplot(aes(x = month, y = rolling_sd)) +
+  geom_line() +
+  ggtitle("Rolling Standard Deviation (12 months)")
+```
+
+## Mathematical Transformations
+
+```{r log_transform}
+views_tsibble <- views_tsibble %>%
+  mutate(log_views = log(views))
+views_tsibble %>%
+  ggplot(aes(x = month, y = log_views)) +
+  geom_line() +
+  ggtitle("Log Transformation of Views")
+views_tsibble %>%
+  mutate(rolling_sd = rollapply(log_views, width = 12, FUN = sd, fill = NA)) %>%
+  ggplot(aes(x = month, y = rolling_sd)) +
+  geom_line() +
+  ggtitle("Rolling Standard Deviation (12 months)")
 
 ```
+```{r box_cox_transform}
+guerrero_lambda <- views_tsibble %>%
+  features(views, guerrero) %>%
+  pull(lambda_guerrero)
+print(guerrero_lambda)
+```
+```{r box_cox_transform_plot}
+views_tsibble <- views_tsibble %>%
+  mutate(box_cox_views = box_cox(views, lambda = guerrero_lambda))
+views_tsibble %>%
+  ggplot(aes(x = month, y = box_cox_views)) +
+  geom_line() +
+  ggtitle("Box-Cox Transformation of Views")
+views_tsibble %>%
+  mutate(rolling_sd = rollapply(box_cox_views, width = 12, FUN = sd, fill = NA)) %>%
+  ggplot(aes(x = month, y = rolling_sd)) +
+  geom_line() +
+  ggtitle("Rolling Standard Deviation (12 months) - Box-Cox")
+```
+
+
 
 ## STL Decomposition
 
 ```{r STL Decomposition}
 views_tsibble %>%
-  model(STL(log(views) ~ season(window = "periodic"))) %>%
+  model(STL(box_cox_views ~ season(window = "periodic"))) %>%
   components() %>%
-  autoplot() + ggtitle("STL Decomposition (log transformed)")
+  autoplot() + ggtitle("STL Decomposition (Box-Cox transformed)")
 ```
 
 ```{r ACF PACF}
@@ -109,14 +139,87 @@ views_tsibble %>% ACF(views) %>% autoplot() + ggtitle("ACF")
 views_tsibble %>% PACF(views) %>% autoplot() + ggtitle("PACF")
 ```
 
+## Stationarity Tests
+```{r stationarity_tests_function}
+run_stationarity_tests <- function(data_ts, lags = 1, za=FALSE) {
+
+  results <- list()
+
+  # ADF Tests
+
+
+  results$ADF_trend <- ur.df(data_ts, type = "trend", lags = lags)
+  results$ADF_drift <- ur.df(data_ts, type = "drift", lags = lags)
+    results$ADF_none  <- ur.df(data_ts, type = "none",  lags = lags)
+  # KPSS Tests
+    results$KPSS_trend <- ur.kpss(data_ts, type = "tau")
+  results$KPSS_level <- ur.kpss(data_ts, type = "mu")
+
+
+  # Zivot-Andrews Tests
+  if (za){
+  results$ZA_both <- ur.za(data_ts, model = "both",lag = lags)
+  results$ZA_trend <-ur.za(data_ts, model = "trend",lag = lags)
+  results$ZA_intercept <-ur.za(data_ts, model = "intercept",lag = lags)
+  }
+  # Output modes
+  return(results)
+
+}
+``` 
+
+```{r lag_selection}
+views_ts <- as.ts(views_tsibble)
+chosen_lag <- ar(views_ts[,3])$order
+print(chosen_lag)
+```
+```{r stationarity}
+stationarity_results <- run_stationarity_tests(views_ts[,3], lags = chosen_lag, za=TRUE)
+
+# Display Summaries of all stationarity tests
+lapply(stationarity_results, summary)
+```
+
+```{r differencing}
+views_tsibble <- views_tsibble %>%
+  mutate(
+    diff_views = difference(views, lag = 1),
+    diff_log_views = difference(log_views, lag = 1),
+    diff_box_cox_views = difference(box_cox_views, lag = 1)
+  )
+
+# Plot all 3 differenced series in 3 plots
+views_tsibble %>%
+  ggplot(aes(x = month, y = diff_views)) +
+  geom_line() +
+  ggtitle("Differenced Views")
+views_tsibble %>%
+  ggplot(aes(x = month, y = diff_log_views)) +
+  geom_line() +
+  ggtitle("Differenced Log Views")
+views_tsibble %>%
+  ggplot(aes(x = month, y = diff_box_cox_views)) +
+  geom_line() +
+  ggtitle("Differenced Box-Cox Views")
+```
+
+```{r stationarity_differenced}
+views_ts <- as.ts(views_tsibble)
+chosen_lag <- ar(views_ts[-1,6])$order
+print(chosen_lag)
+stationarity_results <- run_stationarity_tests(views_ts[-1,6], lags = chosen_lag, za=TRUE)
+lapply(stationarity_results, summary)
+```
+
+
 ## Structural Breaks Analysis
 
 ```{r}
 # Add lagged values and retain index
 views_tsi <- views_tsibble %>%
   mutate(
-    Lag0 = views,
-    Lag1 = lag(views)
+    Lag0 = diff_box_cox_views,
+    Lag1 = lag(diff_box_cox_views)
   )
 
 # Check shift-level features (e.g., max change point)
@@ -124,10 +227,10 @@ views_tsi %>%
   features(Lag0, features = shift_level_max)
 
 # Convert to time series for strucchange
-views_ts <- as.ts(views_tsi)
+views_ts_struc <- as.ts(views_tsi)
 
 # Rolling F-statistics (exclude 15% from start and end)
-qlr <- Fstats(Lag0 ~ Lag1, data = views_ts, from = 0.15)
+qlr <- Fstats(Lag0 ~ Lag1, data = views_ts_struc, from = 0.15)
 
 # Plot F-statistics
 pdf("FStats.pdf")
@@ -150,31 +253,53 @@ lines(breaks)
 
 
 
+
+
 ```{r}
 #locate the number of January 2016 to analyze as a possible break point
 poss_break_point <- which(views_tsibble$month == yearmonth("2016-01"))
-chow_result <- sctest(formula = Lag0 ~ Lag1, type = "Chow", point = poss_break_point, data = views_ts)
+print(poss_break_point)
+chow_result <- sctest(formula = Lag0 ~ Lag1, type = "Chow", point = poss_break_point, data = views_ts_struc)
 print(chow_result)
 ```
 
 
 ```{r}
-views_second_half <- views_ts[(poss_break_point + 1):nrow(views_ts), ]
-views_ts_second_half <- as.ts(views_second_half)
+fit <- views_tsibble |>
+  model(auto = ARIMA(diff_box_cox_views, stepwise = FALSE, approx = FALSE))
+report(fit)
+```
 
-qlr2 <- Fstats(Lag0 ~ Lag1, data = views_ts_second_half, from = 0.15)
+```{r qlr_with_arima_lags}
+views_tsi <- views_tsibble %>%
+  mutate(
+    lag1 = lag(diff_box_cox_views, 1),    # AR(1)
+    lag12 = lag(diff_box_cox_views, 12),  # Seasonal AR(1)
+    lag24 = lag(diff_box_cox_views, 24)   # Seasonal AR(2)
+  )
 
-# SupF test (Andrews' test for structural change)
-test <- sctest(qlr2, type = "supF")
+# Step 2: Run QLR
+qlr <- Fstats(diff_box_cox_views ~ 1 + lag1 + lag12 + lag24, data = as.ts(data), from = 0.15)
+
+# Step 3: Test and plot
+test <- sctest(qlr, type = "supF")
 print(test)
 
-# Estimate breakpoints (with significance level)
-breaks <- breakpoints(qlr2, alpha = 0.05)
-print(breaks)
+bp <- breakpoints(qlr, alpha = 0.05)
+print(bp)
 
-# Plot again with breakpoints
-plot(qlr, alpha = 0.1, main = "F Statistics with Breakpoints")
-lines(breaks)
+plot(qlr, alpha = 0.05, main = "QLR F-Statistics")
+lines(bp)
+```
+
+```{r}
+library(gets)
+
+# Assume views_diff is your transformed/differenced series
+sis <- isat(data$views_transformed, ar = c(1, 12, 24), t.pval = 0.05)
+
+summary(sis)
+plot(sis)
 
 ```
 
