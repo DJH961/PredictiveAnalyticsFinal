@@ -94,6 +94,8 @@ views_tsibble %>%
   ggplot(aes(x = month, y = log_views)) +
   geom_line() +
   ggtitle("Log Transformation of Views")
+
+views_tsibble %>% gg_subseries(log_views) + ggtitle("Subseries")
 views_tsibble %>%
   mutate(rolling_sd = rollapply(log_views, width = 12, FUN = sd, fill = NA)) %>%
   ggplot(aes(x = month, y = rolling_sd)) +
@@ -114,6 +116,7 @@ views_tsibble %>%
   ggplot(aes(x = month, y = box_cox_views)) +
   geom_line() +
   ggtitle("Box-Cox Transformation of Views")
+views_tsibble %>% gg_subseries(box_cox_views) + ggtitle("Subseries")
 views_tsibble %>%
   mutate(rolling_sd = rollapply(box_cox_views, width = 12, FUN = sd, fill = NA)) %>%
   ggplot(aes(x = month, y = rolling_sd)) +
@@ -291,15 +294,114 @@ print(bp)
 plot(qlr, alpha = 0.05, main = "QLR F-Statistics")
 lines(bp)
 ```
+## Train Test Split
+
+```{r train_test_split}
+train_data <- views_tsibble %>% slice_head(n = nrow(.) - 24)
+test_data  <- views_tsibble %>% slice_tail(n = 24)
+```
+
+```{r rolling_samples_for_cross_validation}
+rolling_resamples <- train_data %>%
+  stretch_tsibble(.init = 99, .step = 3)
+```
+
+## Modeling
+
+```{r model_selection}  
+views_tsibble %>%
+  gg_tsdisplay(diff_box_cox_views, plot_type = "partial", lag_max=36)
+```
+
+Ideas: ARIMA(1,1,1)(1,1,1)[12]
+ARIMA(0,1,1)(1,1,1)[12]
+ARIMA(1,1,0)(1,1,1)[12]
+ARIMA(2,1,1)(1,1,1)[12]
+ARIMA(4,1,1)(1,1,1)[12]
+
+
+```{r initial_test}
+cv_models <- rolling_resamples %>%
+  model(
+    arima_1 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(1,1,1, period = 12)),
+    arima_2 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(0,1,1) + PDQ(1,1,1, period = 12)),
+    arima_3 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(1,1,0) + PDQ(1,1,1, period = 12)),
+    arima_4 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(2,1,1) + PDQ(1,1,1, period = 12)),
+    arima_5 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(2,1,2, period = 12)),
+    auto_arima = ARIMA( box_cox(views, lambda = guerrero_lambda)),
+    ets_1 = ETS(box_cox(views, lambda = guerrero_lambda) ~ error("A") + trend("A") + season("A")),
+    ets_2 = ETS(box_cox(views, lambda = guerrero_lambda) ~ error("A") + trend("Ad") + season("A")),
+    auto_ets   = ETS( box_cox(views, lambda = guerrero_lambda))
+  )
+
+cv_results <- cv_models %>%
+  forecast(h = 3) 
+
+train_max_date <- max(train_data$month)
+cv_results_trimmed <- cv_results %>%
+  filter(month <= train_max_date)
+
+final_fold_id <- max(cv_models$.id)
+
+final_models <- cv_models %>%
+  filter(.id == final_fold_id)
+
+model_names <- names(final_models)[!names(final_models) %in% c(".id", "views")]
+
+accuracy_results <- cv_results_trimmed %>%
+  accuracy(data = train_data, measures = list(MASE = MASE, MAPE = MAPE))
+
+for (model_name in model_names) {
+  cat("====================\n")
+  model_obj <- final_models[[model_name]][[1]]
+  print(report(model_obj))
+}
+
+print(accuracy_results)
+```
+
+```{r Plot_residuals}
+final_models %>% 
+  select(arima_1) %>%
+  gg_tsresiduals()
+
+final_models %>% 
+  select(arima_4) %>%
+  gg_tsresiduals()
+
+final_models %>% 
+  select(ets_1) %>%
+  gg_tsresiduals()
+```
+
+```{r Box_Ljung_Test}
+final_models %>%
+  select(arima_1) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24)
+
+final_models %>%
+  select(arima_4) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24)
+
+final_models %>%
+  select(ets_1) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24)
+
+```
+
+
 
 ```{r}
-library(gets)
-
-# Assume views_diff is your transformed/differenced series
-sis <- isat(data$views_transformed, ar = c(1, 12, 24), t.pval = 0.05)
-
-summary(sis)
-plot(sis)
-
+train_data_filtered <- train_data %>%
+  slice(99:n())
+autoplot(train_data_filtered, views) +
+  geom_line(data = cv_results_trimmed, aes(x =month, y = .mean, color = .model),
+            alpha = 0.8) +
+  labs(title = "Rolling-Origin Forecasts vs Training Data",
+       x = "Month", y = "Views",
+       color = "Model")
 ```
 
