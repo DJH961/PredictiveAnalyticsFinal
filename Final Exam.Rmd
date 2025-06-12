@@ -38,7 +38,8 @@ df2 <- df2 %>%
 views_raw <- bind_rows(df1, df2) %>%
   transmute(
     month = as_date(month),
-    views = total.total    
+    views = total.total,
+    views_in_billions= total.total / 1e9
   ) %>%
   arrange(month)
 ```
@@ -46,7 +47,7 @@ views_raw <- bind_rows(df1, df2) %>%
 ```{r exploration}
 glimpse(views_raw)
 summary(views_raw)
-plot1 <- views_raw %>% ggplot(aes(x = month, y = views)) + geom_line()
+plot1 <- views_raw %>% ggplot(aes(x = month, y = views_in_billions)) + geom_line()
 ggsave("plot1.png", plot = plot1, dpi = 300)
 plot1
 ```
@@ -65,7 +66,7 @@ views_tsibble <- views_raw %>%
 has_gaps(views_tsibble)
 interval(views_tsibble)
 ```
-```{r}
+```{r Spectral Entropy}
 print(features(views_tsibble, .vars = views_tsibble$views, features = feat_spectral))
 ```
 
@@ -76,14 +77,14 @@ print(features(views_tsibble, .vars = views_tsibble$views, features = feat_spect
 
 ```{r plots}
 # Seasonal plot
-seasonal_plot <- views_tsibble %>% gg_season(views) + ggtitle("Seasonality")
+seasonal_plot <- views_tsibble %>% gg_season(views_in_billions) + ggtitle("Seasonality")
 
 # Subseries plots (show month-to-month or weekday patterns)
-subseries_plot <- views_tsibble %>% gg_subseries(views) + ggtitle("Subseries")
+subseries_plot <- views_tsibble %>% gg_subseries(views_in_billions) + ggtitle("Subseries")
 
 # Rolling SD
 sd_plot <- views_tsibble %>%
-  mutate(rolling_sd = rollapply(views, width = 12, FUN = sd, fill = NA)) %>%
+  mutate(rolling_sd = rollapply(views_in_billions, width = 12, FUN = sd, fill = NA)) %>%
   ggplot(aes(x = month, y = rolling_sd)) +
   geom_line() +
   ggtitle("Rolling Standard Deviation (12 months)")
@@ -117,13 +118,13 @@ log_sd_plot
 ```
 ```{r box_cox_transform}
 guerrero_lambda <- views_tsibble %>%
-  features(views, guerrero) %>%
+  features(views_in_billions, guerrero) %>%
   pull(lambda_guerrero)
 print(guerrero_lambda)
 ```
 ```{r box_cox_transform_plot}
 views_tsibble <- views_tsibble %>%
-  mutate(box_cox_views = box_cox(views, lambda = guerrero_lambda))
+  mutate(box_cox_views = box_cox(views_in_billions, lambda = guerrero_lambda))
 
 box_cox_plot <- views_tsibble %>%
   ggplot(aes(x = month, y = box_cox_views)) +
@@ -167,15 +168,13 @@ run_stationarity_tests <- function(data_ts, lags = 1, za=FALSE) {
   results <- list()
 
   # ADF Tests
-
-
   results$ADF_trend <- ur.df(data_ts, type = "trend", lags = lags)
   results$ADF_drift <- ur.df(data_ts, type = "drift", lags = lags)
     results$ADF_none  <- ur.df(data_ts, type = "none",  lags = lags)
+    
   # KPSS Tests
     results$KPSS_trend <- ur.kpss(data_ts, type = "tau")
   results$KPSS_level <- ur.kpss(data_ts, type = "mu")
-
 
   # Zivot-Andrews Tests
   if (za){
@@ -191,20 +190,18 @@ run_stationarity_tests <- function(data_ts, lags = 1, za=FALSE) {
 
 ```{r lag_selection}
 views_ts <- as.ts(views_tsibble)
-chosen_lag <- ar(views_ts[,3])$order
+chosen_lag <- ar(views_ts[,4])$order
 print(chosen_lag)
 ```
 ```{r stationarity}
-stationarity_results <- run_stationarity_tests(views_ts[,3], lags = chosen_lag, za=TRUE)
-
-# Display Summaries of all stationarity tests
+stationarity_results <- run_stationarity_tests(views_ts[,4], lags = chosen_lag, za=TRUE)
 lapply(stationarity_results, summary)
 ```
 
 ```{r differencing}
 views_tsibble <- views_tsibble %>%
   mutate(
-    diff_views = difference(views, lag = 1),
+    diff_views = difference(views_in_billions, lag = 1),
     diff_log_views = difference(log_views, lag = 1),
     diff_box_cox_views = difference(box_cox_views, lag = 1)
   )
@@ -218,7 +215,6 @@ views_tsibble %>%
   ggplot(aes(x = month, y = diff_log_views)) +
   geom_line() +
   ggtitle("Differenced Log Views")
-
 box_cox_diff_plot <- views_tsibble %>%
   ggplot(aes(x = month, y = diff_box_cox_views)) +
   geom_line() +
@@ -230,96 +226,95 @@ box_cox_diff_plot
 
 ```{r stationarity_differenced}
 views_ts <- as.ts(views_tsibble)
-chosen_lag <- ar(views_ts[-1,6])$order
+chosen_lag <- ar(views_ts[-1,7])$order
 print(chosen_lag)
-stationarity_results <- run_stationarity_tests(views_ts[-1,6], lags = chosen_lag, za=TRUE)
+stationarity_results <- run_stationarity_tests(views_ts[-1,7], lags = chosen_lag, za=TRUE)
 lapply(stationarity_results, summary)
 ```
 
 
 ## Structural Breaks Analysis
 
-```{r}
-# Add lagged values and retain index
+```{r Chow Test Naive Model}
 views_tsi <- views_tsibble %>%
   mutate(
-    Lag0 = diff_box_cox_views,
     Lag1 = lag(diff_box_cox_views)
   )
 
-# Check shift-level features (e.g., max change point)
-views_tsi %>%
-  features(Lag0, features = shift_level_max)
-
-# Convert to time series for strucchange
-views_ts_struc <- as.ts(views_tsi)
-
-# Rolling F-statistics (exclude 15% from start and end)
-qlr <- Fstats(Lag0 ~ Lag1, data = views_ts_struc, from = 0.15)
-
-# Plot F-statistics
-png("FStats.png")
-plot(qlr, main = "Rolling F-Statistics for Structural Breaks")
-dev.off()
-
-# SupF test (Andrews' test for structural change)
-test <- sctest(qlr, type = "supF")
-print(test)
-
-# Estimate breakpoints (with significance level)
-breaks <- breakpoints(qlr, alpha = 0.05)
-print(breaks)
-
-# Plot again with breakpoints
-plot(qlr, alpha = 0.1, main = "F Statistics with Breakpoints")
-lines(breaks)
-```
-
-
-
-
-
-
-```{r}
 #locate the number of January 2016 to analyze as a possible break point
-poss_break_point <- which(views_tsibble$month == yearmonth("2016-01"))
+poss_break_point <- which(views_tsi$month == yearmonth("2016-01"))
 print(poss_break_point)
-chow_result <- sctest(formula = Lag0 ~ Lag1, type = "Chow", point = poss_break_point, data = views_ts_struc)
+chow_result <- sctest(formula = diff_box_cox_views ~ Lag1, type = "Chow", point = poss_break_point, data = as.ts(views_tsi))
 print(chow_result)
 ```
 
-
-```{r}
+```{r Auto ARIMA for Structural Breaks}
 fit <- views_tsibble |>
-  model(auto = ARIMA(diff_box_cox_views, stepwise = FALSE, approx = FALSE))
+  model(auto = ARIMA(diff_box_cox_views))
 report(fit)
 ```
 
-```{r qlr_with_arima_lags}
-views_tsi <- views_tsibble %>%
+
+```{r QLR with AR Lags}
+views_tsi <- views_tsi %>%
   mutate(
-    lag1 = lag(diff_box_cox_views, 1),    # AR(1)
-    lag12 = lag(diff_box_cox_views, 12),  # Seasonal AR(1)
-    lag24 = lag(diff_box_cox_views, 24)   # Seasonal AR(2)
+    Lag12 = lag(diff_box_cox_views, 12),  # Seasonal AR(1)
+    Lag24 = lag(diff_box_cox_views, 24)   # Seasonal AR(2)
   )
 
-# Step 2: Run QLR
-qlr <- Fstats(diff_box_cox_views ~ 1 + lag1 + lag12 + lag24, data = as.ts(views_tsi), from = 0.15)
-
-# Step 3: Test and plot
-test <- sctest(qlr, type = "supF")
-print(test)
-
-bp <- breakpoints(qlr, alpha = 0.05)
-print(bp)
-
-plot(qlr, alpha = 0.05, main = "QLR F-Statistics")
-lines(bp)
+chow_result2 <- sctest(diff_box_cox_views ~ 1 + Lag1 + Lag12 + Lag24, type = "Chow", point = poss_break_point, data = as.ts(views_tsi))
+print(chow_result2)
 ```
 
-```{r}
-chow_result2 <- sctest(diff_box_cox_views ~ 1 + lag1 + lag12 + lag24, type = "Chow", point = poss_break_point, data = as.ts(views_tsi))
-print(chow_result2)
+
+```{r qlr_naive_model}
+# Calculate F-statistics
+qlr <- Fstats(diff_box_cox_views ~ Lag1, data = as.ts(views_tsi), from = 0.15)
+
+# SupF test
+print(sctest(qlr, type = "supF"))
+
+# Estimate breakpoints
+breaks <- breakpoints(qlr, alpha = 0.05)
+print(breaks)
+
+plot_fstats <- function(Fstats, breakpoints, title= "F-Statistics with Breakpoints") {
+  plot(Fstats, alpha = 0.1, main = title)
+  lines(breakpoints)
+}
+
+png("FStats_Naive.png")
+plot_fstats(qlr, breaks, "F-Statistics Naive Model")
+dev.off()
+
+plot_fstats(qlr, breaks, "F-Statistics Naive Model")
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r qlr_with_arima_lags}
+qlr2 <- Fstats(diff_box_cox_views ~ 1 + Lag1 + Lag12 + Lag24, data = as.ts(views_tsi), from = 0.15)
+
+# SupF test
+print(sctest(qlr2, type = "supF"))
+
+# Estimate breakpoints
+breaks2 <- breakpoints(qlr2, alpha = 0.05)
+print(breaks2)
+
+png("FStats_ARIMA.png")
+plot_fstats(qlr2, breaks2, "F-Statistics ARIMA Model")
+dev.off()
+
+plot_fstats(qlr2, breaks2, "F-Statistics ARIMA Model")
 ```
 
 
@@ -338,61 +333,179 @@ rolling_resamples <- train_data %>%
 ## Modeling
 
 ```{r model_selection}  
-views_tsibble %>%
+acf_pacf_plot <- views_tsibble %>%
   gg_tsdisplay(diff_box_cox_views, plot_type = "partial", lag_max=36)
+ggsave("acf_pacf_plot.png", plot = acf_pacf_plot, dpi = 300, width = 10, height = 7)
+acf_pacf_plot
 ```
 
 Ideas: ARIMA(1,1,1)(1,1,1)[12]
 ARIMA(0,1,1)(1,1,1)[12]
 ARIMA(1,1,0)(1,1,1)[12]
 ARIMA(2,1,1)(1,1,1)[12]
+ARIMA(3,1,1)(1,1,1)[12]
 ARIMA(4,1,1)(1,1,1)[12]
+
+```{r Helper Functions}
+report_models <- function(models, model_names=NULL) {
+  if (is.null(model_names)) {
+    model_names <- names(models)
+  }
+  
+  for (model_name in model_names) {
+    cat("====================\n")
+    model_obj <- models[[model_name]][[1]]
+    print(report(model_obj))
+
+  }
+}
+
+test_ljung_box <- function(models, model_names = NULL, lag = 24) {
+  if (is.null(model_names)) {
+    model_names <- names(models)
+  }
+  
+  results <- map(model_names, function(model_name) {
+    model_obj <- models[[model_name]][[1]]
+    
+    model_obj %>%
+      augment() %>%
+      features(.innov, ljung_box, lag = lag) %>%
+      mutate(model_name = model_name)
+  })
+  bind_rows(results) %>%
+    relocate(model_name)
+}
+
+plot_residuals <- function(models, model_names = NULL) {
+  if (is.null(model_names)) {
+    model_names <- names(models)
+  }
+
+  plots <- list()
+
+  for (model_name in model_names) {
+    plot <- models %>%
+      select(model_name) %>%
+      gg_tsresiduals() +
+      ggtitle(paste("Residuals for", model_name))
+        plots[[model_name]] <- plot
+    ggsave(paste0("residuals_", model_name, ".png"), plot = plot, dpi = 300, width = 10, height = 7)
+
+  }
+  return(plots)
+
+}
+
+
+```
+
+
+
+
+```{r arima_ets_models}
+  arima_specs <- list(
+      arima_111 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(1,0,1,            period = 12)),
+      arima_110 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,0) + PDQ(1,0,1,            period = 12)),
+      arima_011 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(0,1,1) + PDQ(1,0,1, period = 12)),
+      arima_211 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(2,1,1) + PDQ(1,0,1, period = 12)),
+      arima_311 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(3,1,1) + PDQ(1,0,1, period = 12)),
+      arima_112 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,2) + PDQ(1,0,1, period = 12)),
+          arima_s001 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(0,0,1, period = 12)),
+          arima_s100 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(1,0,0, period = 12)),
+      auto_arima = ARIMA( box_cox(views_in_billions, lambda = guerrero_lambda), greedy = FALSE,
+                          stepwise = FALSE))
+
+ets_specs <- list(
+    ets_1 = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("A") + season("A")),
+    ets_2 = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("Ad") + season("A")),
+    auto_ets   = ETS( box_cox(views_in_billions, lambda = guerrero_lambda)))
+
+```
+
+```{r Fit models}
+arima_full_models <- train_data %>%
+  model(!!!arima_specs)
+
+ets_full_models <- train_data %>%
+  model(!!!ets_specs)
+
+arima_full_models %>%
+  select(auto_arima) %>%
+  report()
+```
+
+
+```{r Residual Plots}
+plots <- plot_residuals(arima_full_models)
+for (plot in plots) {
+  print(plot)
+}
+```
+
+```{r Report Full Models}
+report_models(arima_full_models)
+```
+
+```{r Ljung Box Test Full Models}
+test_ljung_box(arima_full_models)
+```
 
 
 ```{r initial_test}
-cv_models <- rolling_resamples %>%
-  model(
-    arima_1 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(1,1,1, period = 12)),
-    arima_2 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(0,1,1) + PDQ(1,1,1, period = 12)),
-    arima_3 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(1,1,0) + PDQ(1,1,1, period = 12)),
-    arima_4 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(2,1,1) + PDQ(1,1,1, period = 12)),
-    arima_5 = ARIMA(box_cox(views, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(2,1,2, period = 12)),
-    auto_arima = ARIMA( box_cox(views, lambda = guerrero_lambda)),
-    ets_1 = ETS(box_cox(views, lambda = guerrero_lambda) ~ error("A") + trend("A") + season("A")),
-    ets_2 = ETS(box_cox(views, lambda = guerrero_lambda) ~ error("A") + trend("Ad") + season("A")),
-    auto_ets   = ETS( box_cox(views, lambda = guerrero_lambda))
-  )
-
+rolling_cv_predictions<- function(train_data, cv_models) {
 cv_results <- cv_models %>%
   forecast(h = 3) 
-
 train_max_date <- max(train_data$month)
 cv_results_trimmed <- cv_results %>%
   filter(month <= train_max_date)
 
 final_fold_id <- max(cv_models$.id)
 
+
 final_models <- cv_models %>%
   filter(.id == final_fold_id)
 
-model_names <- names(final_models)[!names(final_models) %in% c(".id", "views")]
-
+model_names <- names(final_models)[!names(final_models) %in% c(".id", "views_in_billions")]
 accuracy_results <- cv_results_trimmed %>%
   accuracy(data = train_data, measures = list(MASE = MASE, MAPE = MAPE))
 
-for (model_name in model_names) {
-  cat("====================\n")
-  model_obj <- final_models[[model_name]][[1]]
-  print(report(model_obj))
-}
+report_models(final_models, model_names)
 
 print(accuracy_results)
+
+return(list(
+  cv_results = cv_results,
+  final_models = final_models
+))
+
+}
 ```
 
+
+
+
+
+```{r Rolling Cross-Validation Models}
+arima_cv_models <- rolling_resamples %>%
+  model(!!!arima_specs)
+
+ets_cv_models <- rolling_resamples %>%
+  model(!!!ets_specs)
+```
+
+```{r run_cv_models}
+cv_results_arima <- rolling_cv_predictions(train_data, arima_cv_models)
+```
+
+
 ```{r Plot_residuals}
-final_models %>% 
+residuals_arima1 <- final_models %>% 
   select(arima_1) %>%
   gg_tsresiduals()
+
+ggsave("residuals_arima1.png", plot = residuals_arima1, dpi = 300, width = 10, height = 7)
+residuals_arima1
 
 final_models %>% 
   select(arima_4) %>%
@@ -423,10 +536,10 @@ final_models %>%
 
 
 
-```{r}
+```{r Plot CV Results}
 train_data_filtered <- train_data %>%
   slice(99:n())
-autoplot(train_data_filtered, views) +
+autoplot(train_data_filtered, views_in_billions) +
   geom_line(data = cv_results_trimmed, aes(x =month, y = .mean, color = .model),
             alpha = 0.8) +
   labs(title = "Rolling-Origin Forecasts vs Training Data",
