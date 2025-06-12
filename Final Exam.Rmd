@@ -1,7 +1,9 @@
 ---
 title: "Predictive Analytics - Final Exam"
 date: "13/06/2025"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
@@ -16,7 +18,7 @@ library(urca)
 library(fpp3)
 library(zoo)
 library(strucchange)
-library(gridExtra)
+library(patchwork)
 ```
 
 ## Data Loading and Exploration
@@ -44,7 +46,9 @@ views_raw <- bind_rows(df1, df2) %>%
 ```{r exploration}
 glimpse(views_raw)
 summary(views_raw)
-views_raw %>% ggplot(aes(x = month, y = views)) + geom_line()
+plot1 <- views_raw %>% ggplot(aes(x = month, y = views)) + geom_line()
+ggsave("plot1.png", plot = plot1, dpi = 300)
+plot1
 ```
 
 ```{r check_duplicates}
@@ -70,19 +74,24 @@ print(features(views_tsibble, .vars = views_tsibble$views, features = feat_spect
 
 ## Time Series Analysis
 
-```{r}
+```{r plots}
 # Seasonal plot
-views_tsibble %>% gg_season(views) + ggtitle("Seasonality")
+seasonal_plot <- views_tsibble %>% gg_season(views) + ggtitle("Seasonality")
 
 # Subseries plots (show month-to-month or weekday patterns)
-views_tsibble %>% gg_subseries(views) + ggtitle("Subseries")
+subseries_plot <- views_tsibble %>% gg_subseries(views) + ggtitle("Subseries")
 
 # Rolling SD
-views_tsibble %>%
+sd_plot <- views_tsibble %>%
   mutate(rolling_sd = rollapply(views, width = 12, FUN = sd, fill = NA)) %>%
   ggplot(aes(x = month, y = rolling_sd)) +
   geom_line() +
   ggtitle("Rolling Standard Deviation (12 months)")
+
+ggsave("plot2.png", plot = seasonal_plot + subseries_plot + sd_plot, dpi = 300, width = 15, height = 5)
+seasonal_plot
+subseries_plot
+sd_plot
 ```
 
 ## Mathematical Transformations
@@ -90,17 +99,20 @@ views_tsibble %>%
 ```{r log_transform}
 views_tsibble <- views_tsibble %>%
   mutate(log_views = log(views))
-views_tsibble %>%
+log_plot <- views_tsibble %>%
   ggplot(aes(x = month, y = log_views)) +
   geom_line() +
   ggtitle("Log Transformation of Views")
 
-views_tsibble %>% gg_subseries(log_views) + ggtitle("Subseries")
-views_tsibble %>%
+log_sd_plot <- views_tsibble %>%
   mutate(rolling_sd = rollapply(log_views, width = 12, FUN = sd, fill = NA)) %>%
   ggplot(aes(x = month, y = rolling_sd)) +
   geom_line() +
-  ggtitle("Rolling Standard Deviation (12 months)")
+  ggtitle("Rolling Standard Deviation (12 months) - Log Transformed")
+
+ggsave("plot3.png", plot = log_plot+log_sd_plot, dpi = 300, width = 15, height = 7)
+log_plot
+log_sd_plot
 
 ```
 ```{r box_cox_transform}
@@ -112,16 +124,20 @@ print(guerrero_lambda)
 ```{r box_cox_transform_plot}
 views_tsibble <- views_tsibble %>%
   mutate(box_cox_views = box_cox(views, lambda = guerrero_lambda))
-views_tsibble %>%
+
+box_cox_plot <- views_tsibble %>%
   ggplot(aes(x = month, y = box_cox_views)) +
   geom_line() +
   ggtitle("Box-Cox Transformation of Views")
-views_tsibble %>% gg_subseries(box_cox_views) + ggtitle("Subseries")
-views_tsibble %>%
+box_cox_sd_plot <- views_tsibble %>%
   mutate(rolling_sd = rollapply(box_cox_views, width = 12, FUN = sd, fill = NA)) %>%
   ggplot(aes(x = month, y = rolling_sd)) +
   geom_line() +
   ggtitle("Rolling Standard Deviation (12 months) - Box-Cox")
+
+ggsave("plot4.png", plot = box_cox_plot+box_cox_sd_plot, dpi = 300, width = 15, height = 7)
+box_cox_plot
+box_cox_sd_plot
 ```
 
 
@@ -129,10 +145,12 @@ views_tsibble %>%
 ## STL Decomposition
 
 ```{r STL Decomposition}
-views_tsibble %>%
-  model(STL(box_cox_views ~ season(window = "periodic"))) %>%
+stl_plot <- views_tsibble %>%
+  model(STL(box_cox_views ~ season(window = "periodic"), robust=TRUE)) %>%
   components() %>%
   autoplot() + ggtitle("STL Decomposition (Box-Cox transformed)")
+ggsave("plot5.png", plot = stl_plot, dpi = 300, width = 10, height = 7)
+stl_plot
 ```
 
 ```{r ACF PACF}
@@ -200,10 +218,14 @@ views_tsibble %>%
   ggplot(aes(x = month, y = diff_log_views)) +
   geom_line() +
   ggtitle("Differenced Log Views")
-views_tsibble %>%
+
+box_cox_diff_plot <- views_tsibble %>%
   ggplot(aes(x = month, y = diff_box_cox_views)) +
   geom_line() +
   ggtitle("Differenced Box-Cox Views")
+
+ggsave("plot6.png", plot = box_cox_diff_plot, dpi = 300)
+box_cox_diff_plot
 ```
 
 ```{r stationarity_differenced}
@@ -236,7 +258,7 @@ views_ts_struc <- as.ts(views_tsi)
 qlr <- Fstats(Lag0 ~ Lag1, data = views_ts_struc, from = 0.15)
 
 # Plot F-statistics
-pdf("FStats.pdf")
+png("FStats.png")
 plot(qlr, main = "Rolling F-Statistics for Structural Breaks")
 dev.off()
 
@@ -282,7 +304,7 @@ views_tsi <- views_tsibble %>%
   )
 
 # Step 2: Run QLR
-qlr <- Fstats(diff_box_cox_views ~ 1 + lag1 + lag12 + lag24, data = as.ts(data), from = 0.15)
+qlr <- Fstats(diff_box_cox_views ~ 1 + lag1 + lag12 + lag24, data = as.ts(views_tsi), from = 0.15)
 
 # Step 3: Test and plot
 test <- sctest(qlr, type = "supF")
@@ -294,6 +316,13 @@ print(bp)
 plot(qlr, alpha = 0.05, main = "QLR F-Statistics")
 lines(bp)
 ```
+
+```{r}
+chow_result2 <- sctest(diff_box_cox_views ~ 1 + lag1 + lag12 + lag24, type = "Chow", point = poss_break_point, data = as.ts(views_tsi))
+print(chow_result2)
+```
+
+
 ## Train Test Split
 
 ```{r train_test_split}
