@@ -449,7 +449,7 @@ plot_residuals(arima_full_models)
 
 ## Initial ETS Modeling
 
-```{r}
+```{r ets_specs}
 ets_specs <- list(
     ets_A_A_A = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("A") + season("A")),
     ets_A_Ad_A = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("Ad") + season("A")),
@@ -540,7 +540,7 @@ plot8
 ```
 
 
-```{r Full Model with Confidence Intervals}
+```{r Full ETS Model with Confidence Intervals}
 ets_AAA_prediction <- test_prediction %>%
   filter(.model == "ets_A_A_A")
 plot9<- autoplot(ets_AAA_prediction, views_tsibble) +
