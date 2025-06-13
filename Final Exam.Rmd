@@ -524,7 +524,7 @@ plot7 <- autoplot(test_data, views_in_billions) +
        x = "Month", y = "Views in Billions",
        color = "Model")
 
-ggsave("plot7.png",plot7, dpi = 300, width = 10, height = 7)
+ggsave("plot7.png",plot7, dpi = 300, width = 10, height = 10)
 plot7
 ```
 
@@ -535,7 +535,7 @@ plot8 <- autoplot(auto_arima_prediction, views_tsibble) +
   labs(title = "Forecast from Auto ARIMA",
        y = "Views (in billions)",
        x = "Time") 
-ggsave("plot8.png", plot = plot8, dpi = 300, width = 10, height = 7)
+ggsave("plot8.png", plot = plot8, dpi = 300, width = 10, height = 5)
 plot8
 ```
 
@@ -547,7 +547,7 @@ plot9<- autoplot(ets_AAA_prediction, views_tsibble) +
   labs(title = "Forecast from ETS(A,A,A)",
        y = "Views (in billions)",
        x = "Time") 
-ggsave("plot9.png", plot = plot9, dpi = 300, width = 10, height = 7)
+ggsave("plot9.png", plot = plot9, dpi = 300, width = 10, height = 5)
 plot9
 ```
 
