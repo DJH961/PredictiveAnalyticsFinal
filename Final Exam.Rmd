@@ -19,6 +19,8 @@ library(fpp3)
 library(zoo)
 library(strucchange)
 library(patchwork)
+library(fable)
+library(fabletools)
 ```
 
 ## Data Loading and Exploration
@@ -321,16 +323,12 @@ plot_fstats(qlr2, breaks2, "F-Statistics ARIMA Model")
 ## Train Test Split
 
 ```{r train_test_split}
-train_data <- views_tsibble %>% slice_head(n = nrow(.) - 24)
-test_data  <- views_tsibble %>% slice_tail(n = 24)
+n_test <- floor(0.2 * nrow(views_tsibble))
+train_data <- views_tsibble %>% slice_head(n = nrow(.) - n_test)
+test_data  <- views_tsibble %>% slice_tail(n = n_test)
 ```
 
-```{r rolling_samples_for_cross_validation}
-rolling_resamples <- train_data %>%
-  stretch_tsibble(.init = 99, .step = 3)
-```
-
-## Modeling
+## Inital Modeling ARIMA
 
 ```{r model_selection}  
 acf_pacf_plot <- views_tsibble %>%
@@ -368,13 +366,21 @@ test_ljung_box <- function(models, model_names = NULL, lag = 24) {
   results <- map(model_names, function(model_name) {
     model_obj <- models[[model_name]][[1]]
     
-    model_obj %>%
+    ljung_box_result <- model_obj %>%
       augment() %>%
-      features(.innov, ljung_box, lag = lag) %>%
-      mutate(model_name = model_name)
+      features(.innov, ljung_box, lag = lag)
+    
+    info_criteria <- glance(model_obj) %>%
+      select(AIC, AICc, BIC)
+
+    bind_cols(
+      tibble(model_name = model_name),
+      info_criteria,
+      ljung_box_result
+    )
   })
-  bind_rows(results) %>%
-    relocate(model_name)
+  
+  bind_rows(results)
 }
 
 plot_residuals <- function(models, model_names = NULL) {
@@ -389,12 +395,10 @@ plot_residuals <- function(models, model_names = NULL) {
       select(model_name) %>%
       gg_tsresiduals() +
       ggtitle(paste("Residuals for", model_name))
-        plots[[model_name]] <- plot
     ggsave(paste0("residuals_", model_name, ".png"), plot = plot, dpi = 300, width = 10, height = 7)
+    print(plot)
 
   }
-  return(plots)
-
 }
 
 
@@ -404,7 +408,7 @@ plot_residuals <- function(models, model_names = NULL) {
 
 
 ```{r arima_ets_models}
-  arima_specs <- list(
+  arima_full_specs <- list(
       arima_111 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(1,0,1,            period = 12)),
       arima_110 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,0) + PDQ(1,0,1,            period = 12)),
       arima_011 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(0,1,1) + PDQ(1,0,1, period = 12)),
@@ -414,33 +418,17 @@ plot_residuals <- function(models, model_names = NULL) {
           arima_s001 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(0,0,1, period = 12)),
           arima_s100 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(1,0,0, period = 12)),
       auto_arima = ARIMA( box_cox(views_in_billions, lambda = guerrero_lambda), greedy = FALSE,
-                          stepwise = FALSE))
-
-ets_specs <- list(
-    ets_1 = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("A") + season("A")),
-    ets_2 = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("Ad") + season("A")),
-    auto_ets   = ETS( box_cox(views_in_billions, lambda = guerrero_lambda)))
+                          stepwise = FALSE, approximation = FALSE))
 
 ```
 
 ```{r Fit models}
 arima_full_models <- train_data %>%
-  model(!!!arima_specs)
-
-ets_full_models <- train_data %>%
-  model(!!!ets_specs)
+  model(!!!arima_full_specs)
 
 arima_full_models %>%
   select(auto_arima) %>%
   report()
-```
-
-
-```{r Residual Plots}
-plots <- plot_residuals(arima_full_models)
-for (plot in plots) {
-  print(plot)
-}
 ```
 
 ```{r Report Full Models}
@@ -451,99 +439,136 @@ report_models(arima_full_models)
 test_ljung_box(arima_full_models)
 ```
 
-
-```{r initial_test}
-rolling_cv_predictions<- function(train_data, cv_models) {
-cv_results <- cv_models %>%
-  forecast(h = 3) 
-train_max_date <- max(train_data$month)
-cv_results_trimmed <- cv_results %>%
-  filter(month <= train_max_date)
-
-final_fold_id <- max(cv_models$.id)
-
-
-final_models <- cv_models %>%
-  filter(.id == final_fold_id)
-
-model_names <- names(final_models)[!names(final_models) %in% c(".id", "views_in_billions")]
-accuracy_results <- cv_results_trimmed %>%
-  accuracy(data = train_data, measures = list(MASE = MASE, MAPE = MAPE))
-
-report_models(final_models, model_names)
-
-print(accuracy_results)
-
-return(list(
-  cv_results = cv_results,
-  final_models = final_models
-))
-
-}
+```{r Plot ARIMA Models}
+plot_residuals(arima_full_models)
 ```
 
 
 
 
 
-```{r Rolling Cross-Validation Models}
-arima_cv_models <- rolling_resamples %>%
-  model(!!!arima_specs)
+## Initial ETS Modeling
 
-ets_cv_models <- rolling_resamples %>%
+```{r}
+ets_specs <- list(
+    ets_A_A_A = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("A") + season("A")),
+    ets_A_Ad_A = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("Ad") + season("A")),
+    auto_ets   = ETS( box_cox(views_in_billions, lambda = guerrero_lambda)))
+```
+
+```{r Fit ETS Models}
+ets_full_models <- train_data %>%
   model(!!!ets_specs)
+ets_full_models %>%
+  select(auto_ets) %>%
+  report()
 ```
 
-```{r run_cv_models}
-cv_results_arima <- rolling_cv_predictions(train_data, arima_cv_models)
+```{r Residual Plots ETS}
+plot_residuals(ets_full_models)
 ```
 
-
-```{r Plot_residuals}
-residuals_arima1 <- final_models %>% 
-  select(arima_1) %>%
-  gg_tsresiduals()
-
-ggsave("residuals_arima1.png", plot = residuals_arima1, dpi = 300, width = 10, height = 7)
-residuals_arima1
-
-final_models %>% 
-  select(arima_4) %>%
-  gg_tsresiduals()
-
-final_models %>% 
-  select(ets_1) %>%
-  gg_tsresiduals()
+```{r Report ETS Models}
+report_models(ets_full_models)
 ```
 
-```{r Box_Ljung_Test}
+```{r Ljung Box Test ETS}
+test_ljung_box(ets_full_models)
+```
+
+```{r ETS Reduced Models}
+ets_specs_reduced <- list(
+    ets_A_A_A = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("A") + season("A")),
+    auto_ets   = ETS(box_cox(views_in_billions, lambda = guerrero_lambda))
+)
+ets_reduced_models <- train_data %>%
+  model(!!!ets_specs_reduced)
+```
+
+## Model Testing and Comparison
+
+```{r Final Models}
+final_model_specs <- list(
+        arima_111 = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(1,0,1,            period = 12)),
+    auto_arima = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda), greedy = FALSE,
+                       stepwise = FALSE, approximation = FALSE),
+    ets_A_A_A = ETS(box_cox(views_in_billions, lambda = guerrero_lambda) ~ error("A") + trend("A") + season("A")),
+    auto_ets   = ETS(box_cox(views_in_billions, lambda = guerrero_lambda))
+)
+final_models <- train_data %>%
+  model(!!!final_model_specs)
+
 final_models %>%
-  select(arima_1) %>%
-  augment() %>%
-  features(.innov, ljung_box, lag = 24)
+  select(auto_arima) %>%
+  report()
 
 final_models %>%
-  select(arima_4) %>%
-  augment() %>%
-  features(.innov, ljung_box, lag = 24)
-
-final_models %>%
-  select(ets_1) %>%
-  augment() %>%
-  features(.innov, ljung_box, lag = 24)
-
+  select(auto_ets) %>%
+  report()
 ```
 
+
+
+```{r Model Comparison}
+test_prediction <- final_models %>%
+  forecast(h = n_test)
+accuracy(test_prediction, test_data)
+```
 
 
 ```{r Plot CV Results}
-train_data_filtered <- train_data %>%
-  slice(99:n())
-autoplot(train_data_filtered, views_in_billions) +
-  geom_line(data = cv_results_trimmed, aes(x =month, y = .mean, color = .model),
+plot7 <- autoplot(test_data, views_in_billions) +
+  geom_line(data = test_prediction, aes(x =month, y = .mean, color = .model),
             alpha = 0.8) +
-  labs(title = "Rolling-Origin Forecasts vs Training Data",
-       x = "Month", y = "Views",
+  labs(title = "Forecasts vs Actual Data",
+       x = "Month", y = "Views in Billions",
        color = "Model")
+
+ggsave("plot7.png",plot7, dpi = 300, width = 10, height = 7)
+plot7
+```
+
+```{r Full Model with Confidence Intervals}
+auto_arima_prediction <- test_prediction %>%
+  filter(.model == "auto_arima")
+plot8 <- autoplot(auto_arima_prediction, views_tsibble) +
+  labs(title = "Forecast from Auto ARIMA",
+       y = "Views (in billions)",
+       x = "Time") 
+ggsave("plot8.png", plot = plot8, dpi = 300, width = 10, height = 7)
+plot8
+```
+
+
+```{r Full Model with Confidence Intervals}
+ets_AAA_prediction <- test_prediction %>%
+  filter(.model == "ets_A_A_A")
+plot9<- autoplot(ets_AAA_prediction, views_tsibble) +
+  labs(title = "Forecast from ETS(A,A,A)",
+       y = "Views (in billions)",
+       x = "Time") 
+ggsave("plot9.png", plot = plot9, dpi = 300, width = 10, height = 7)
+plot9
+```
+
+
+## Forecast of the Future
+
+```{r Final Forecast}
+final_fit <- views_tsibble %>%
+  model( auto_arima  = ARIMA(box_cox(views_in_billions, lambda = guerrero_lambda) ~ 0 + pdq(1,1,1) + PDQ(2,0,2,            period = 12)))
+
+final_fit %>%
+  report()
+
+final_forecast <- final_fit %>%
+  forecast(h = "2 years")
+
+plot10 <- autoplot(final_forecast, views_tsibble) +
+  labs(title = "Final Forecast for Wikipedia Views",
+       y = "Views (in billions)",
+       x = "Time")
+ggsave("plot10.png", plot10, dpi = 300, width = 10, height = 7)
+plot10
 ```
 
